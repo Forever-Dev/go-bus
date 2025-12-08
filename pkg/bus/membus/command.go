@@ -2,74 +2,56 @@ package membus
 
 import (
 	"context"
-	"reflect"
 
 	"github.com/forever-dev/go-bus/pkg/bus"
 )
 
 // Publish implements bus.Bus.
-func (m *memBus) Send(ctx context.Context, msg bus.Message) {
+func (m *memBus) Send(ctx context.Context, msg bus.Message) error {
 	m.msgMutex.RLock()
 	defer m.msgMutex.RUnlock()
 
-	msgKey := getMessageKey(msg)
-
 	// First priotity is group handlers
-	if group, ok := m.msgGroups[msgKey]; ok {
+	if group, ok := m.msgGroups[msg.TypeKey()]; ok {
 		member := group.ChooseMember()
 		if member != nil {
-			go func(member *GroupMember) {
-				handlerCtx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
-				defer cancel()
+			m.cfg.Logger.Debug("sending message group member handler",
+				"messageType", msg.TypeKey(),
+				"member", member.Id,
+				"group", group.Id,
+			)
+			err := member.handler(ctx, msg)
 
-				m.cfg.Logger.Debug("sending message group member handler",
-					"messageType", msgKey,
+			if err := member.FinishProcessing(); err != nil {
+				m.cfg.Logger.Error("error finishing processing for member",
 					"member", member.Id,
 					"group", group.Id,
+					"messageType", msg.TypeKey(),
+					"error", err,
 				)
-				if err := member.handler(handlerCtx, msg); err != nil {
-					m.cfg.Logger.Error("message group member handler error",
-						"error", err,
-						"messageType", msgKey,
-						"member", member.Id,
-						"group", group.Id,
-					)
-				}
-				if err := member.handler(handlerCtx, msg); err != nil {
-					m.cfg.Logger.Error("message group member handler error",
-						"error", err,
-						"messageType", msgKey,
-						"member", member.Id,
-						"group", group.Id,
-					)
-				}
-			}(member)
-			return
+			}
+
+			return err
+		} else {
+			m.cfg.Logger.Warn("no available members in message group",
+				"messageType", msg.TypeKey(),
+				"group", group.Id,
+			)
 		}
 	}
 
 	// Next priority is individual handlers
-	if handler, ok := m.msgHandlers[msgKey]; ok {
-		go func(handler bus.MessageHandler) {
-			handlerCtx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
-			defer cancel()
-
-			m.cfg.Logger.Debug("sending message handler",
-				"messageType", msgKey,
-			)
-			if err := handler(handlerCtx, msg); err != nil {
-				m.cfg.Logger.Error("message handler error",
-					"error", err,
-					"messageType", msgKey,
-				)
-			}
-		}(handler)
-		return
+	if handler, ok := m.msgHandlers[msg.TypeKey()]; ok {
+		m.cfg.Logger.Debug("sending message handler",
+			"messageType", msg.TypeKey(),
+		)
+		return handler(ctx, msg)
 	}
 
 	m.cfg.Logger.Warn("no message handlers for message type",
-		"messageType", msgKey,
+		"messageType", msg.TypeKey(),
 	)
+	return bus.ErrNoHandler
 }
 
 // Subscribe implements bus.Bus.
@@ -77,7 +59,7 @@ func (m *memBus) Handle(msg bus.Message, handler bus.MessageHandler) error {
 	m.msgMutex.Lock()
 	defer m.msgMutex.Unlock()
 
-	key := getMessageKey(msg)
+	key := msg.TypeKey()
 	m.msgHandlers[key] = handler
 	return nil
 }
@@ -87,22 +69,21 @@ func (m *memBus) GroupHandle(handlerId, groupId string, msg bus.Message, handler
 	m.msgMutex.Lock()
 	defer m.msgMutex.Unlock()
 
-	key := getMessageKey(msg)
-	group, exists := m.msgGroups[key]
+	group, exists := m.msgGroups[msg.TypeKey()]
 	if !exists {
 		group = NewGroup(groupId)
-		m.msgGroups[key] = group
+		m.msgGroups[msg.TypeKey()] = group
 	}
 
 	m.cfg.Logger.Info("adding message group member",
-		"messageType", key,
+		"messageType", msg.TypeKey(),
 		"handler", handlerId,
 		"group", groupId,
 	)
 	if err := group.AddMember(handlerId, handler); err != nil {
 		m.cfg.Logger.Error("adding message group member error",
 			"error", err,
-			"messageType", key,
+			"messageType", msg.TypeKey(),
 			"handler", handlerId,
 			"group", groupId,
 		)
@@ -116,25 +97,20 @@ func (m *memBus) GroupRemoveHandler(handlerId, groupId string, msg bus.Message) 
 	m.msgMutex.Lock()
 	defer m.msgMutex.Unlock()
 
-	key := getMessageKey(msg)
-	group, exists := m.msgGroups[key]
+	group, exists := m.msgGroups[msg.TypeKey()]
 	if !exists {
 		m.cfg.Logger.Warn("no message group for message type",
-			"messageType", key,
+			"messageType", msg.TypeKey(),
 			"group", groupId,
 		)
 		return ErrGroupNotFound
 	}
 
 	m.cfg.Logger.Info("removing message group member",
-		"messageType", key,
+		"messageType", msg.TypeKey(),
 		"handler", handlerId,
 		"group", groupId,
 	)
 	group.RemoveMember(handlerId)
 	return nil
-}
-
-func getMessageKey(msg bus.Message) string {
-	return reflect.TypeOf(msg).String()
 }

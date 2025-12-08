@@ -3,8 +3,10 @@ package membus_test
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-faker/faker/v4"
@@ -21,198 +23,487 @@ var _ = Describe("Bus.Event", func() {
 		messageBus bus.MessageBus
 		msg        bus.Message
 
-		eventType string
+		runCtx context.Context
 	)
 
-	BeforeEach(func() {
-		eventType = faker.Word()
+	defaultCfg := membus.NewDefaultConfig()
+	workerCfg := membus.NewDefaultConfig()
+	workerCfg.WorkerPoolConfig = membus.NewWorkerPoolConfig(10, 100)
 
-		msg = bus.NewBasicMessage(uuid.New().String(), []byte(faker.Word()))
-		Expect(msg).NotTo(BeNil())
+	cfgs := map[string]*membus.Config{
+		"without workers": defaultCfg,
+		"with workers":    workerCfg,
+	}
 
-		messageBus = membus.New(membus.NewConfig())
-		Expect(messageBus).NotTo(BeNil())
+	for name, cfg := range cfgs {
+		Context(name, func() {
+			BeforeEach(func() {
+				runCtx = context.Background()
 
-	})
+				msg = bus.NewBasicMessage(uuid.New().String(), []byte(faker.Word()))
+				Expect(msg).NotTo(BeNil())
 
-	Describe("Publish", func() {
-		It("publishes an event to the bus", func(ctx context.Context) {
-			Expect(func() {
-				messageBus.Publish(ctx, eventType, msg)
-			}).NotTo(Panic())
-		})
-	})
+				messageBus = membus.New(runCtx, cfg)
+				Expect(messageBus).NotTo(BeNil())
+			})
 
-	Describe("Subscribe", func() {
-		It("subscribes to an event type", func(ctx context.Context) {
-			handler := func(ctx context.Context, msg bus.Message) error {
-				return nil
-			}
+			Describe("Publish", func() {
+				It("publishes an event to the bus", func(ctx context.Context) {
+					Expect(func() {
+						messageBus.Publish(ctx, msg)
+					}).NotTo(Panic())
+				})
+			})
 
-			Expect(func() {
-				messageBus.Subscribe(eventType, uuid.New().String(), handler)
-			}).NotTo(Panic())
-		})
-
-		It("should work concurrently", func(ctx context.Context) {
-			numSubscribers := 100
-			errs := make(chan error, numSubscribers)
-
-			for range numSubscribers {
-				go func() {
+			Describe("Subscribe", func() {
+				It("subscribes to an event type", func(ctx context.Context) {
 					handler := func(ctx context.Context, msg bus.Message) error {
 						return nil
 					}
 
-					err := messageBus.Subscribe(eventType, uuid.New().String(), handler)
-					errs <- err
-				}()
-			}
+					Expect(func() {
+						messageBus.Subscribe(msg.TypeKey(), uuid.New().String(), handler)
+					}).NotTo(Panic())
+				})
 
-			halfway := numSubscribers / 2
-			for range halfway {
-				go func() {
-					err := <-errs
+				It("should work concurrently", func(ctx context.Context) {
+					numSubscribers := 100
+					errs := make(chan error, numSubscribers)
+
+					for range numSubscribers {
+						go func() {
+							handler := func(ctx context.Context, msg bus.Message) error {
+								return nil
+							}
+
+							err := messageBus.Subscribe(msg.TypeKey(), uuid.New().String(), handler)
+							errs <- err
+						}()
+					}
+
+					halfway := numSubscribers / 2
+					for range halfway {
+						go func() {
+							err := <-errs
+							Expect(err).To(Succeed())
+						}()
+					}
+					for i := halfway; i < numSubscribers; i++ {
+						err := <-errs
+						Expect(err).To(Succeed())
+					}
+				})
+
+				It("should error when subscribing with duplicate handler ID", func(ctx context.Context) {
+					handler := func(ctx context.Context, msg bus.Message) error {
+						return nil
+					}
+
+					handlerId := uuid.New().String()
+					err := messageBus.Subscribe(msg.TypeKey(), handlerId, handler)
 					Expect(err).To(Succeed())
-				}()
-			}
-			for i := halfway; i < numSubscribers; i++ {
-				err := <-errs
-				Expect(err).To(Succeed())
-			}
-		})
 
-		It("should error when subscribing with duplicate handler ID", func(ctx context.Context) {
-			handler := func(ctx context.Context, msg bus.Message) error {
-				return nil
-			}
+					err = messageBus.Subscribe(msg.TypeKey(), handlerId, handler)
+					Expect(err).ToNot(Succeed())
+				})
+			})
 
-			handlerId := uuid.New().String()
-			err := messageBus.Subscribe(eventType, handlerId, handler)
-			Expect(err).To(Succeed())
+			Describe("Unsubscribe", func() {
+				It("unsubscribes from an event type", func(ctx context.Context) {
+					handler := func(ctx context.Context, msg bus.Message) error {
+						return nil
+					}
 
-			err = messageBus.Subscribe(eventType, handlerId, handler)
-			Expect(err).ToNot(Succeed())
-		})
-	})
+					handlerId := uuid.New().String()
+					err := messageBus.Subscribe(msg.TypeKey(), handlerId, handler)
+					Expect(err).To(Succeed())
 
-	Context("Publish with subscribers", func() {
-		It("invokes subscribed handlers when an event is published", func(ctx context.Context) {
-			numSend := 100
-			invoked := make(chan string, numSend)
+					err = messageBus.Unsubscribe(msg.TypeKey(), handlerId)
+					Expect(err).To(Succeed())
+				})
 
-			handler1 := func(ctx context.Context, msg bus.Message) error {
-				invoked <- "handler1"
-				return nil
-			}
+				It("should error when unsubscribing with unknown handler ID", func(ctx context.Context) {
+					handlerId := uuid.New().String()
+					err := messageBus.Unsubscribe(msg.TypeKey(), handlerId)
+					Expect(err).ToNot(Succeed())
+				})
+			})
 
-			handler2 := func(ctx context.Context, msg bus.Message) error {
-				invoked <- "handler2"
-				return nil
-			}
+			Describe("GroupUnsubscribe", func() {
+				It("unsubscribes a group member from an event type", func(ctx context.Context) {
+					handler := func(ctx context.Context, msg bus.Message) error {
+						return nil
+					}
 
-			Expect(messageBus.Subscribe(eventType, "handler1", handler1)).To(Succeed())
-			Expect(messageBus.Subscribe(eventType, "handler2", handler2)).To(Succeed())
+					groupId := uuid.New().String()
+					handlerId := uuid.New().String()
+					err := messageBus.GroupSubscribe(msg.TypeKey(), handlerId, groupId, handler)
+					Expect(err).To(Succeed())
 
-			for range numSend {
-				go messageBus.Publish(ctx, eventType, msg)
-			}
+					err = messageBus.GroupUnsubscribe(msg.TypeKey(), handlerId, groupId)
+					Expect(err).To(Succeed())
+				})
 
-			receivedHandlers := make(map[string]uint)
-			for range numSend * 2 {
-				h := <-invoked
-				receivedHandlers[h]++
-			}
+				It("should error when unsubscribing with unknown group member ID", func(ctx context.Context) {
+					groupId := uuid.New().String()
+					handlerId := uuid.New().String()
+					err := messageBus.GroupUnsubscribe(msg.TypeKey(), handlerId, groupId)
+					Expect(err).ToNot(Succeed())
+				})
 
-			Expect(receivedHandlers).To(HaveKey("handler1"))
-			Expect(receivedHandlers).To(HaveKey("handler2"))
-			Expect(receivedHandlers["handler1"]).To(Equal(uint(numSend)))
-			Expect(receivedHandlers["handler2"]).To(Equal(uint(numSend)))
-		})
+				It("should error when unsubscribing with unknown group ID", func(ctx context.Context) {
+					handler := func(ctx context.Context, msg bus.Message) error {
+						return nil
+					}
 
-		It("invokes subscribed group handlers when an event is published", func(ctx context.Context) {
-			numSend := 100
-			numMembers := 5
-			invoked := make(chan string, numSend)
+					groupId := uuid.New().String()
+					handlerId := uuid.New().String()
+					err := messageBus.GroupSubscribe(msg.TypeKey(), handlerId, groupId, handler)
+					Expect(err).To(Succeed())
 
-			groupId := uuid.New().String()
+					unknownGroupId := uuid.New().String()
+					err = messageBus.GroupUnsubscribe(msg.TypeKey(), handlerId, unknownGroupId)
+					Expect(err).ToNot(Succeed())
+				})
+			})
 
-			for i := range numMembers {
-				memberId := "member-" + strconv.Itoa(i)
-				handler := func(ctx context.Context, msg bus.Message) error {
-					invoked <- memberId
-					return nil
+			Describe("GroupSubscribe", func() {
+				It("subscribes a group member to an event type", func(ctx context.Context) {
+					handler := func(ctx context.Context, msg bus.Message) error {
+						return nil
+					}
+
+					groupId := uuid.New().String()
+					handlerId := uuid.New().String()
+					err := messageBus.GroupSubscribe(msg.TypeKey(), handlerId, groupId, handler)
+					Expect(err).To(Succeed())
+				})
+
+				It("should work concurrently", func(ctx context.Context) {
+					numSubscribers := 100
+					errs := make(chan error, numSubscribers)
+
+					for range numSubscribers {
+						go func() {
+							handler := func(ctx context.Context, msg bus.Message) error {
+								return nil
+							}
+
+							groupId := uuid.New().String()
+							handlerId := uuid.New().String()
+							err := messageBus.GroupSubscribe(msg.TypeKey(), handlerId, groupId, handler)
+							errs <- err
+						}()
+					}
+
+					halfway := numSubscribers / 2
+					for range halfway {
+						go func() {
+							err := <-errs
+							Expect(err).To(Succeed())
+						}()
+					}
+					for i := halfway; i < numSubscribers; i++ {
+						err := <-errs
+						Expect(err).To(Succeed())
+					}
+				})
+
+				It("should error when subscribing with duplicate group member ID", func(ctx context.Context) {
+					handler := func(ctx context.Context, msg bus.Message) error {
+						return nil
+					}
+
+					groupId := uuid.New().String()
+					handlerId := uuid.New().String()
+					err := messageBus.GroupSubscribe(msg.TypeKey(), handlerId, groupId, handler)
+					Expect(err).To(Succeed())
+
+					err = messageBus.GroupSubscribe(msg.TypeKey(), handlerId, groupId, handler)
+					Expect(err).ToNot(Succeed())
+				})
+			})
+
+			Describe("Publish with no subscribers", func() {
+				It("should not error", func(ctx context.Context) {
+					err := messageBus.Publish(ctx, msg)
+					Expect(err).To(Succeed())
+				})
+			})
+
+			Context("Publish with subscribers", func() {
+				It("should not error when all handlers are removed", func(ctx context.Context) {
+					var wg sync.WaitGroup
+					wg.Add(1)
+					count := 0
+					handler := func(ctx context.Context, msg bus.Message) error {
+						count++
+						wg.Done()
+						return nil
+					}
+
+					handlerId := uuid.New().String()
+					err := messageBus.Subscribe(msg.TypeKey(), handlerId, handler)
+					Expect(err).To(Succeed())
+
+					err = messageBus.Publish(ctx, msg)
+					Expect(err).To(Succeed())
+					wg.Wait()
+					Expect(count).To(Equal(1))
+
+					err = messageBus.Unsubscribe(msg.TypeKey(), handlerId)
+					Expect(err).To(Succeed())
+
+					err = messageBus.Publish(ctx, msg)
+					Expect(err).To(Succeed())
+					time.Sleep(50 * time.Millisecond)
+					Consistently(count).MustPassRepeatedly(10).To(Equal(1))
+				})
+
+				It("should not error when all group handlers are removed", func(ctx context.Context) {
+					var wg sync.WaitGroup
+					wg.Add(1)
+					count := 0
+					handler := func(ctx context.Context, msg bus.Message) error {
+						count++
+						wg.Done()
+						return nil
+					}
+
+					groupId := uuid.New().String()
+					handlerId := uuid.New().String()
+					err := messageBus.GroupSubscribe(msg.TypeKey(), handlerId, groupId, handler)
+					Expect(err).To(Succeed())
+
+					err = messageBus.Publish(ctx, msg)
+					Expect(err).To(Succeed())
+					wg.Wait()
+					Expect(count).To(Equal(1))
+
+					err = messageBus.GroupUnsubscribe(msg.TypeKey(), handlerId, groupId)
+					Expect(err).To(Succeed())
+
+					err = messageBus.Publish(ctx, msg)
+					Expect(err).To(Succeed())
+					time.Sleep(50 * time.Millisecond)
+					Consistently(count).MustPassRepeatedly(10).To(Equal(1))
+				})
+
+				type runSettings struct {
+					numSend     int
+					numHandlers int
+					numMembers  int
 				}
 
-				Expect(messageBus.GroupSubscribe(eventType, memberId, groupId, handler)).To(Succeed())
-			}
+				var (
+					possibleSettings = map[string]runSettings{
+						"only handlers":      {numSend: 50, numHandlers: 3, numMembers: 0},
+						"only group members": {numSend: 50, numHandlers: 0, numMembers: 3},
+						// "handlers and group members": {numSend: 50, numHandlers: 3, numMembers: 3},
+					}
+				)
 
-			for range numSend {
-				go messageBus.Publish(ctx, eventType, msg)
-			}
+				for name, settings := range possibleSettings {
+					Context(name, func() {
+						var (
+							invoked = make(chan string, 5)
+							wg      sync.WaitGroup
 
-			receivedMembers := make(map[string]uint)
-			for range numSend {
-				member := <-invoked
-				receivedMembers[member]++
-			}
+							expectedInvocations uint
+						)
 
-			Expect(len(receivedMembers)).To(Equal(numMembers))
-			totalInvocations := uint(0)
-			for _, count := range receivedMembers {
-				totalInvocations += count
-			}
-			Expect(totalInvocations).To(Equal(uint(numSend)))
-		})
+						BeforeEach(func() {
+							invoked = make(chan string, settings.numSend)
+							wg = sync.WaitGroup{}
+							expectedInvocations = uint(settings.numSend * (settings.numHandlers))
+							if settings.numMembers > 0 {
+								expectedInvocations += uint(settings.numSend)
+							}
+							wg.Add(int(expectedInvocations))
+						})
 
-		It("invokes subscribed group handles and handlers", func(ctx context.Context) {
-			numSend := 100
-			numMembers := 5
-			invoked := make(chan string, numSend)
+						Context("without context timeout", func() {
+							AfterEach(func(ctx context.Context) {
+								for range settings.numSend {
+									go messageBus.Publish(ctx, msg)
+								}
+								go func() {
+									wg.Wait()
+									close(invoked)
+								}()
 
-			groupId := uuid.New().String()
+								receivedHandlers := make(map[string]uint)
+								for h := range invoked {
+									receivedHandlers[h]++
+								}
 
-			for i := range numMembers {
-				memberId := "member-" + strconv.Itoa(i)
-				handler := func(ctx context.Context, msg bus.Message) error {
-					invoked <- memberId
-					return nil
+								for i := range settings.numHandlers {
+									handlerId := "handler-" + strconv.Itoa(i)
+									Expect(receivedHandlers).To(HaveKey(handlerId))
+									Expect(receivedHandlers[handlerId]).To(Equal(uint(settings.numSend)))
+								}
+
+								memberTotal := uint(0)
+								for i := range settings.numMembers {
+									memberId := "member-" + strconv.Itoa(i)
+									Expect(receivedHandlers).To(HaveKey(memberId))
+									count := receivedHandlers[memberId]
+									memberTotal += count
+									Expect(count).To(BeNumerically("<", uint(settings.numSend)))
+								}
+
+								if settings.numMembers > 0 {
+									Expect(memberTotal).To(Equal(uint(settings.numSend)))
+								}
+							})
+
+							It("invokes subscribed handlers when an event is published", func(ctx context.Context) {
+								newHandler := func(id string) bus.MessageHandler {
+									return func(ctx context.Context, msg bus.Message) error {
+										invoked <- id
+										wg.Done()
+										return nil
+									}
+								}
+								for i := range settings.numHandlers {
+									handlerId := "handler-" + strconv.Itoa(i)
+									handler := newHandler(handlerId)
+									Expect(messageBus.Subscribe(msg.TypeKey(), handlerId, handler)).To(Succeed())
+								}
+
+								if settings.numMembers > 0 {
+									groupId := uuid.New().String()
+
+									for i := range settings.numMembers {
+										memberId := "member-" + strconv.Itoa(i)
+										handler := newHandler(memberId)
+										Expect(messageBus.GroupSubscribe(msg.TypeKey(), memberId, groupId, handler)).To(Succeed())
+									}
+								}
+							})
+
+							It("invokes generic subscribed handlers when an event is published", func(ctx context.Context) {
+								newHandler := func(id string) bus.GenericMessageHandler[*bus.BasicMessage] {
+									return func(ctx context.Context, msg *bus.BasicMessage) error {
+										invoked <- id
+										wg.Done()
+										return nil
+									}
+								}
+								for i := range settings.numHandlers {
+									handlerId := "handler-" + strconv.Itoa(i)
+									handler := newHandler(handlerId)
+									Expect(bus.Subscribe(messageBus, handlerId, handler)).To(Succeed())
+								}
+
+								if settings.numMembers > 0 {
+									groupId := uuid.New().String()
+
+									for i := range settings.numMembers {
+										memberId := "member-" + strconv.Itoa(i)
+										handler := newHandler(memberId)
+										Expect(bus.GroupSubscribe(messageBus, memberId, groupId, handler)).To(Succeed())
+									}
+								}
+							})
+						})
+
+						It("should pass timeout ctx", func(ctx context.Context) {
+							ctxDoneInvoked := make(chan string, 5)
+							errInvoked := make(chan string, 5)
+							newHander := func(id string) bus.MessageHandler {
+								return func(ctx context.Context, msg bus.Message) error {
+									defer wg.Done()
+
+									timer := time.NewTimer(time.Duration(rand.Int32N(2)) * time.Millisecond)
+									defer timer.Stop()
+									select {
+									case <-ctx.Done():
+										ctxDoneInvoked <- id
+									case <-timer.C:
+										invoked <- id
+									}
+
+									if rand.IntN(3) == 1 {
+										return fmt.Errorf("random error")
+									}
+									return nil
+								}
+							}
+
+							for i := range settings.numHandlers {
+								handlerId := "handler-" + strconv.Itoa(i)
+								handler := newHander(handlerId)
+								Expect(messageBus.Subscribe(msg.TypeKey(), handlerId, handler)).To(Succeed())
+							}
+
+							for i := range settings.numMembers {
+								memberId := "member-" + strconv.Itoa(i)
+								handler := newHander(memberId)
+								Expect(messageBus.GroupSubscribe(msg.TypeKey(), memberId, "group-1", handler)).To(Succeed())
+							}
+
+							for range settings.numSend {
+								go func() {
+									pubCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+									defer cancel()
+									if err := messageBus.Publish(pubCtx, msg); err != nil {
+										errInvoked <- "publish-error"
+										for range settings.numHandlers {
+											wg.Done()
+										}
+									}
+								}()
+							}
+
+							go func() {
+								wg.Wait()
+								close(invoked)
+								close(ctxDoneInvoked)
+								close(errInvoked)
+							}()
+
+							receivedHandlers := make(map[string]int)
+							for {
+								select {
+								case h, ok := <-invoked:
+									if !ok {
+										invoked = nil
+									} else {
+										receivedHandlers[h]++
+									}
+								case h, ok := <-ctxDoneInvoked:
+									if !ok {
+										ctxDoneInvoked = nil
+									} else {
+										receivedHandlers[h]--
+									}
+								case h, ok := <-errInvoked:
+									if !ok {
+										errInvoked = nil
+									} else {
+										receivedHandlers[h]--
+									}
+								}
+
+								if invoked == nil && ctxDoneInvoked == nil && errInvoked == nil {
+									break
+								}
+							}
+
+							for i := range settings.numHandlers {
+								handlerId := "handler-" + strconv.Itoa(i)
+								Expect(receivedHandlers).To(HaveKey(handlerId))
+								Expect(receivedHandlers[handlerId]).To(BeNumerically("<", uint(settings.numSend)))
+								Expect(receivedHandlers[handlerId]).To(BeNumerically(">", -settings.numSend))
+							}
+						})
+					})
 				}
 
-				Expect(messageBus.GroupSubscribe(eventType, memberId, groupId, handler)).To(Succeed())
-			}
-
-			handler1 := func(ctx context.Context, msg bus.Message) error {
-				invoked <- "handler1"
-				return nil
-			}
-
-			handler2 := func(ctx context.Context, msg bus.Message) error {
-				invoked <- "handler2"
-				return nil
-			}
-
-			Expect(messageBus.Subscribe(eventType, "handler1", handler1)).To(Succeed())
-			Expect(messageBus.Subscribe(eventType, "handler2", handler2)).To(Succeed())
-
-			for range numSend {
-				go messageBus.Publish(ctx, eventType, msg)
-			}
-			receivedMembers := make(map[string]uint)
-			for range numSend * 2 {
-				member := <-invoked
-				receivedMembers[member]++
-			}
-
-			Expect(len(receivedMembers)).To(Equal(numMembers + 2))
-			totalInvocations := uint(0)
-			for _, count := range receivedMembers {
-				totalInvocations += count
-			}
-
-			Expect(totalInvocations).To(Equal(uint(numSend * 2)))
+			})
 		})
-	})
+	}
 })
 
 type fmtPrintfLogger struct{}

@@ -63,6 +63,21 @@ var _ = Describe("Group", func() {
 
 			Expect(len(group.Members)).To(Equal(numMembers))
 		})
+
+		It("returns an error when adding a duplicate member", func() {
+			id := faker.Word()
+			group := membus.NewGroup(id)
+
+			memberId := faker.Word()
+
+			err := group.AddMember(memberId, nil)
+			Expect(err).To(Succeed())
+			Expect(len(group.Members)).To(Equal(1))
+
+			err = group.AddMember(memberId, nil)
+			Expect(err).ToNot(Succeed())
+			Expect(len(group.Members)).To(Equal(1))
+		})
 	})
 
 	Describe("ChooseMember", func() {
@@ -135,13 +150,13 @@ var _ = Describe("Group", func() {
 
 	Describe("RemoveMember", func() {
 		It("removes a member from the group", func() {
-			id := faker.Word()
+			id := uuid.New().String()
 			group := membus.NewGroup(id)
 
-			memberId := faker.Word()
+			memberId := uuid.New().String()
 			Expect(group.AddMember(memberId, nil)).To(Succeed())
 			Expect(len(group.Members)).To(Equal(1))
-			Expect(group.AddMember(faker.Word(), nil)).To(Succeed())
+			Expect(group.AddMember(uuid.New().String(), nil)).To(Succeed())
 			Expect(len(group.Members)).To(Equal(2))
 
 			group.RemoveMember(memberId)
@@ -151,10 +166,10 @@ var _ = Describe("Group", func() {
 
 	Context("finish processing", func() {
 		It("marks a message as finished processing for a member", func() {
-			id := faker.Word()
+			id := uuid.New().String()
 			group := membus.NewGroup(id)
 
-			memberId := faker.Word()
+			memberId := uuid.New().String()
 			Expect(group.AddMember(memberId, nil)).To(Succeed())
 
 			member := group.Members[memberId]
@@ -166,10 +181,10 @@ var _ = Describe("Group", func() {
 		})
 
 		It("returns an error when finishing processing with no active messages", func() {
-			id := faker.Word()
+			id := uuid.New().String()
 			group := membus.NewGroup(id)
 
-			memberId := faker.Word()
+			memberId := uuid.New().String()
 			Expect(group.AddMember(memberId, nil)).To(Succeed())
 
 			member := group.Members[memberId]

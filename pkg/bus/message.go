@@ -5,9 +5,15 @@ type Message interface {
 	// GetId returns the unique identifier of the message.
 	GetId() string
 
-	// GetPayload returns the payload of the message.
-	GetPayload() []byte
+	// TypeKey returns the type key of the message.
+	TypeKey() string
 
-	// Equals compares this message with another message for equality.
-	Equals(other Message) bool
+	// Bytes returns the payload of the message.
+	Bytes() ([]byte, error)
+
+	// Unmarshal populates the message from the given byte slice.
+	Unmarshal(data []byte) error
+
+	// Raw returns the raw representation of the message.
+	Raw() any
 }

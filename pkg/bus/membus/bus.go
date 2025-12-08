@@ -1,8 +1,8 @@
 package membus
 
 import (
+	"context"
 	"sync"
-	"time"
 
 	"github.com/forever-dev/go-bus/pkg/bus"
 )
@@ -28,29 +28,71 @@ type memBus struct {
 	// eventMutx is used to synchronize access to event handlers and groups
 	eventMutex sync.RWMutex
 
+	jobCh           chan Job
+	workers         []*Worker
+	usingWorkerPool bool
+	workerWg        sync.WaitGroup
+
 	cfg *Config
 }
 
 type Config struct {
-	Timeout time.Duration
-	Logger  bus.Logger
+	Logger bus.Logger
+
+	// WorkerPoolConfig holds the configuration for the worker pool.
+	// If nil, no worker pool is used and event handlers are
+	// executed in a separate goroutine for each event. Otherwise,
+	// a worker pool is used to limit the number of concurrent event handlers
+	// and goroutines.
+	WorkerPoolConfig *WorkerPoolConfig
 }
 
-func NewConfig() *Config {
+func NewDefaultConfig() *Config {
 	return &Config{
-		Timeout: 15 * time.Second,
-		Logger:  bus.NewNoOpLogger(),
+		Logger: bus.NewNoOpLogger(),
 	}
 }
 
 func New(
+	ctx context.Context,
 	cfg *Config,
 ) bus.MessageBus {
-	return &memBus{
+	b := &memBus{
 		msgHandlers:   make(map[string]bus.MessageHandler),
 		msgGroups:     make(map[string]*Group),
 		eventHandlers: make(EventMap),
 		eventGroups:   make(EventGroupMap),
 		cfg:           cfg,
 	}
+
+	if b.cfg.WorkerPoolConfig != nil {
+		if b.cfg.WorkerPoolConfig.NumWorkers <= 0 {
+			b.cfg.WorkerPoolConfig.NumWorkers = 10
+		}
+		if b.cfg.WorkerPoolConfig.QueueSize <= 0 {
+			b.cfg.WorkerPoolConfig.QueueSize = 100
+		}
+
+		b.workers = make([]*Worker, b.cfg.WorkerPoolConfig.NumWorkers)
+		b.jobCh = make(chan Job, b.cfg.WorkerPoolConfig.QueueSize)
+		b.workerWg.Add(len(b.workers))
+		for idx := range b.workers {
+			worker := &Worker{
+				Id:     idx + 1,
+				Logger: b.cfg.Logger,
+			}
+			b.workers[idx] = worker
+			worker.Start(ctx, b.jobCh, &b.workerWg)
+		}
+
+		b.usingWorkerPool = true
+	}
+
+	return b
+}
+
+func (b *memBus) Shutdown(ctx context.Context) error {
+	close(b.jobCh)
+	b.workerWg.Wait()
+	return nil
 }

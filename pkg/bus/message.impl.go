@@ -1,7 +1,7 @@
 package bus
 
-// basicMessage is a simple implementation of the Message interface.
-type basicMessage struct {
+// BasicMessage is a simple implementation of the Message interface.
+type BasicMessage struct {
 	// id is a unique identifier for the message
 	id string
 
@@ -9,28 +9,35 @@ type basicMessage struct {
 	payload []byte
 }
 
-// Equals implements Message.
-func (b *basicMessage) Equals(other Message) bool {
-	if otherMsg, ok := other.(*basicMessage); ok {
-		return b.id == otherMsg.id &&
-			string(b.payload) == string(otherMsg.payload)
-	}
-	return false
+// Unmarshal implements Message.
+func (b *BasicMessage) Unmarshal(data []byte) error {
+	b.payload = data
+	return nil
+}
+
+// Raw implements Message.
+func (b *BasicMessage) Raw() any {
+	return b
+}
+
+// TypeKey implements Message.
+func (b *BasicMessage) TypeKey() string {
+	return "basic"
 }
 
 // GetId implements Message.
-func (b *basicMessage) GetId() string {
+func (b *BasicMessage) GetId() string {
 	return b.id
 }
 
-// GetPayload implements Message.
-func (b *basicMessage) GetPayload() []byte {
-	return b.payload
+// Bytes implements Message.
+func (b *BasicMessage) Bytes() ([]byte, error) {
+	return b.payload, nil
 }
 
 // NewBasicMessage creates a new basicMessage.
 func NewBasicMessage(id string, payload []byte) Message {
-	return &basicMessage{
+	return &BasicMessage{
 		id:      id,
 		payload: payload,
 	}

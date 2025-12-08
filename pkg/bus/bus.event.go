@@ -5,7 +5,7 @@ import "context"
 // EventBus defines the interface for a event bus (Pub/Sub) system.
 type EventBus interface {
 	// Publish sends a message to the bus.
-	Publish(ctx context.Context, eventType string, msg Message)
+	Publish(ctx context.Context, msg Message) error
 
 	// Subscribe registers a handler for incoming messages.
 	Subscribe(eventType, listenerId string, handler MessageHandler) error
@@ -19,6 +19,9 @@ type EventBus interface {
 
 	// GroupUnsubscribe removes a handler for incoming messages for a specific group.
 	GroupUnsubscribe(eventType, listenerId, groupId string) error
+
+	// Shutdown gracefully shuts down the event bus
+	Shutdown(ctx context.Context) error
 }
 
 type EventBusError struct {

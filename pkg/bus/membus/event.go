@@ -7,88 +7,130 @@ import (
 )
 
 // Publish implements bus.EventBus.
-func (m *memBus) Publish(ctx context.Context, eventType string, event bus.Message) {
+func (m *memBus) Publish(ctx context.Context, event bus.Message) error {
 	m.eventMutex.RLock()
 	defer m.eventMutex.RUnlock()
 
-	if handlers, ok := m.eventHandlers[eventType]; ok {
+	if handlers, ok := m.eventHandlers[event.TypeKey()]; ok {
 		for id, handler := range handlers {
 			if handler == nil {
 				m.cfg.Logger.Warn("nil event handler",
-					"eventType", eventType,
+					"eventType", event.TypeKey(),
 					"handler", id,
 				)
 				continue
 			}
 
-			go func(handler bus.MessageHandler, id string) {
-				handlerCtx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
-				defer cancel()
-
-				m.cfg.Logger.Debug("invoking event handler",
-					"eventType", eventType,
-					"handler", id,
-				)
-				err := handler(handlerCtx, event)
-				if err != nil {
-					m.cfg.Logger.Error("event handler error",
-						"error", err,
-						"eventType", eventType,
+			if m.usingWorkerPool {
+				select {
+				case m.jobCh <- Job{
+					Ctx:     ctx,
+					Message: event,
+					Handler: handler,
+					Type:    event.TypeKey(),
+				}:
+				case <-ctx.Done():
+					m.cfg.Logger.Error("context done before event handler could be queued",
+						"eventType", event.TypeKey(),
+						"handler", id,
+						"error", ctx.Err(),
+					)
+					return ctx.Err()
+				}
+			} else {
+				go func(handler bus.MessageHandler, id string) {
+					m.cfg.Logger.Debug("invoking event handler",
+						"eventType", event.TypeKey(),
 						"handler", id,
 					)
-				}
-			}(handler, id)
+					err := handler(ctx, event)
+					if err != nil {
+						m.cfg.Logger.Error("event handler error",
+							"error", err,
+							"eventType", event.TypeKey(),
+							"handler", id,
+						)
+					}
+				}(handler, id)
+			}
 		}
 	} else {
 		m.cfg.Logger.Debug("no event handlers for event type",
-			"eventType", eventType,
+			"eventType", event.TypeKey(),
 		)
 	}
 
-	if groups, ok := m.eventGroups[eventType]; ok {
+	if groups, ok := m.eventGroups[event.TypeKey()]; ok {
 		for _, group := range groups {
 			if len(group.Members) == 0 {
 				m.cfg.Logger.Error("event group has no members",
-					"eventType", eventType,
+					"eventType", event.TypeKey(),
 					"group", group.Id,
 				)
 				continue
 			}
 
-			go func(group *Group) {
-				handlerCtx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
-				defer cancel()
-
+			if m.usingWorkerPool {
 				member := group.ChooseMember()
+				select {
+				case m.jobCh <- Job{
+					Ctx:     ctx,
+					Message: event,
+					Handler: member.handler,
+					Member:  member,
+					Type:    event.TypeKey(),
+				}:
+				case <-ctx.Done():
+					m.cfg.Logger.Error("context done before event group handler could be queued",
+						"eventType", event.TypeKey(),
+						"handler", member.Id,
+						"group", group.Id,
+						"error", ctx.Err(),
+					)
+					return ctx.Err()
+				}
+			} else {
+				go func(group *Group) {
+					member := group.ChooseMember()
+					if member == nil {
+						m.cfg.Logger.Error("no available group member to handle event",
+							"eventType", event.TypeKey(),
+							"group", group.Id,
+						)
+						return
+					}
 
-				m.cfg.Logger.Debug("invoking event handler",
-					"eventType", eventType,
-					"handler", member.Id,
-					"group", group.Id,
-				)
-				if err := member.handler(handlerCtx, event); err != nil {
-					m.cfg.Logger.Error("event handler error",
-						"error", err,
-						"eventType", eventType,
+					m.cfg.Logger.Debug("invoking event handler",
+						"eventType", event.TypeKey(),
 						"handler", member.Id,
 						"group", group.Id,
 					)
-				}
-				if err := member.FinishProcessing(); err != nil {
-					m.cfg.Logger.Error("event handler finished processing error",
-						"error", err,
-						"eventType", eventType,
-						"handler", member.Id,
-						"group", group.Id,
-					)
-				}
-			}(group)
+					if err := member.handler(ctx, event); err != nil {
+						m.cfg.Logger.Error("event handler error",
+							"error", err,
+							"eventType", event.TypeKey(),
+							"handler", member.Id,
+							"group", group.Id,
+						)
+					}
+					if err := member.FinishProcessing(); err != nil {
+						m.cfg.Logger.Error("event handler finished processing error",
+							"error", err,
+							"eventType", event.TypeKey(),
+							"handler", member.Id,
+							"group", group.Id,
+						)
+					}
+				}(group)
+			}
 		}
 	} else {
 		m.cfg.Logger.Debug("no event groups for event type",
-			"eventType", eventType,
+			"eventType", event.TypeKey(),
 		)
 	}
+
+	return nil
 }
 
 // Subscribe implements bus.EventBus.

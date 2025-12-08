@@ -7,4 +7,6 @@ type MessageBus interface {
 	EventBus
 }
 
-type MessageHandler func(ctx context.Context, msg Message) error
+type GenericMessageHandler[T Message] func(ctx context.Context, msg T) error
+
+type MessageHandler GenericMessageHandler[Message]
