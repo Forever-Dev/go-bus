@@ -2,11 +2,13 @@ module github.com/forever-dev/go-bus
 
 go 1.24.4
 
-require github.com/onsi/ginkgo/v2 v2.27.2
+require (
+	github.com/google/uuid v1.6.0
+	github.com/onsi/ginkgo/v2 v2.27.2
+)
 
 require (
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
