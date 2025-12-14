@@ -51,7 +51,7 @@ func shimHandler[T Message](handler GenericMessageHandler[T]) MessageHandler {
 		if raw, ok := m.(*RawMessage); ok {
 			var z T
 			typedMsgPtr := reflect.New(reflect.TypeOf(z).Elem()).Interface().(T)
-			if err := raw.Unmarshal(raw.Payload); err != nil {
+			if err := typedMsgPtr.Unmarshal(raw.Payload); err != nil {
 				return &EventBusError{&BusError{fmt.Sprintf("failed to unmarshal raw message to type %T: %v", typedMsgPtr, err)}}
 			}
 			return handler(ctx, typedMsgPtr)
