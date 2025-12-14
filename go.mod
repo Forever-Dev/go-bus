@@ -5,10 +5,14 @@ go 1.24.4
 require (
 	github.com/google/uuid v1.6.0
 	github.com/onsi/ginkgo/v2 v2.27.2
+	github.com/twmb/franz-go v1.20.5
 )
 
 require (
 	github.com/google/go-cmp v0.7.0 // indirect
+	github.com/klauspost/compress v1.18.1 // indirect
+	github.com/pierrec/lz4/v4 v4.1.22 // indirect
+	github.com/twmb/franz-go/pkg/kmsg v1.12.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
