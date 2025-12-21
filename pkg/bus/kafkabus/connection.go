@@ -52,6 +52,7 @@ func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
 		kgo.WithLogger(NewKafkaLoggerAdapter(k.config.Logger, k.config.LogLevel)),
 	}
+	opts = append(opts, k.config.Opts...)
 	if l.group != "" {
 		k.config.Logger.Debug("setting consumer group for listener",
 			"group_id", l.group,

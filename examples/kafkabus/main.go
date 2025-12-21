@@ -27,6 +27,7 @@ func main() {
 	cfg := kafkabus.Config{
 		Seeds:  []string{KafkaBroker},
 		Logger: logger,
+		Acks:   kgo.AllISRAcks(),
 	}
 
 	// Wait up to 5 seconds for Kafka to be available (useful for Docker setup)

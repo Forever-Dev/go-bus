@@ -24,6 +24,8 @@ type Config struct {
 	LogLevel kgo.LogLevel
 
 	Acks kgo.Acks
+
+	Opts []kgo.Opt
 }
 
 func NewKafkaBus(
