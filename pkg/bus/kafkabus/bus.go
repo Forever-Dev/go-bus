@@ -22,6 +22,8 @@ type Config struct {
 	Logger bus.Logger
 
 	LogLevel kgo.LogLevel
+
+	Acks kgo.Acks
 }
 
 func NewKafkaBus(

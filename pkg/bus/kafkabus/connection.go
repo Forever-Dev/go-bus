@@ -48,6 +48,7 @@ func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(k.config.Seeds...),
 		kgo.ConsumeTopics(l.topic),
+		kgo.RequiredAcks(k.config.Acks),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
 		kgo.WithLogger(NewKafkaLoggerAdapter(k.config.Logger, k.config.LogLevel)),
 	}
