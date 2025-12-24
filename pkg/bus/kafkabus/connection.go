@@ -42,7 +42,7 @@ func (c *connection) Close() error {
 }
 
 // NewConnection creates a new Kafka connection with the given seeds, group ID, and listener ID.
-func (k *kafkaBus) NewConnection(l *listener, strictOrderProcessing bool) (*connection, error) {
+func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 	if len(k.config.Seeds) == 0 {
 		return nil, ErrNoSeedsProvided
 	}
@@ -86,7 +86,7 @@ func (k *kafkaBus) NewConnection(l *listener, strictOrderProcessing bool) (*conn
 		logger:        k.config.Logger,
 		exitCh:        make(chan struct{}),
 
-		strictProcessingOrder: strictOrderProcessing,
+		strictProcessingOrder: k.config.StrictConsumeOrdering,
 	}
 	if l.id != "" {
 		k.config.Logger.Debug("adding listener to new kafka connection",
