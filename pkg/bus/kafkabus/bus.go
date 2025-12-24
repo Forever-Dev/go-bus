@@ -23,8 +23,6 @@ type Config struct {
 
 	LogLevel kgo.LogLevel
 
-	Acks kgo.Acks
-
 	Opts []kgo.Opt
 
 	// StrictConsumeOrdering ensures that messages consumed from the same topic

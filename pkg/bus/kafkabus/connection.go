@@ -50,7 +50,6 @@ func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(k.config.Seeds...),
 		kgo.ConsumeTopics(l.topic),
-		kgo.RequiredAcks(k.config.Acks),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
 		kgo.WithLogger(NewKafkaLoggerAdapter(k.config.Logger, k.config.LogLevel)),
 	}
@@ -62,13 +61,6 @@ func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 			"topic", l.topic,
 		)
 		opts = append(opts, kgo.ConsumerGroup(l.group))
-	}
-
-	if l.id == "" {
-		k.config.Logger.Debug("creating main kafka client without listener",
-			"topic", l.topic,
-		)
-		opts = append(opts, kgo.RequiredAcks(kgo.NoAck()))
 	}
 
 	client, err := kgo.NewClient(opts...)
