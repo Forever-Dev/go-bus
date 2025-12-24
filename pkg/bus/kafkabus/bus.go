@@ -26,6 +26,10 @@ type Config struct {
 	Acks kgo.Acks
 
 	Opts []kgo.Opt
+
+	// StrictConsumeOrdering ensures that messages consumed from the same topic
+	// are processed in the order they were sent. This may impact performance.
+	StrictConsumeOrdering bool
 }
 
 func NewKafkaBus(

@@ -15,6 +15,8 @@ type connection struct {
 	listeners     map[string]*listener
 	topicHandlers map[string]map[string]bus.MessageHandler
 
+	strictProcessingOrder bool
+
 	keepAlive bool
 
 	logger bus.Logger
@@ -40,7 +42,7 @@ func (c *connection) Close() error {
 }
 
 // NewConnection creates a new Kafka connection with the given seeds, group ID, and listener ID.
-func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
+func (k *kafkaBus) NewConnection(l *listener, strictOrderProcessing bool) (*connection, error) {
 	if len(k.config.Seeds) == 0 {
 		return nil, ErrNoSeedsProvided
 	}
@@ -83,6 +85,8 @@ func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 		topicHandlers: make(map[string]map[string]bus.MessageHandler),
 		logger:        k.config.Logger,
 		exitCh:        make(chan struct{}),
+
+		strictProcessingOrder: strictOrderProcessing,
 	}
 	if l.id != "" {
 		k.config.Logger.Debug("adding listener to new kafka connection",
@@ -204,18 +208,30 @@ func (c *connection) Listen(ctx context.Context) {
 			}
 
 			for _, handler := range handlers {
-				go func(h bus.MessageHandler, msg bus.Message) {
-					if err := h(context.Background(), msg); err != nil {
+				if c.strictProcessingOrder {
+					if err := handler(context.Background(), rawMessage); err != nil {
 						c.logger.Error("error handling message in kafka connection",
 							"error", err,
-							"topic", msg.TypeKey(),
-							"message_id", msg.GetId(),
+							"topic", rawMessage.TypeKey(),
+							"message_id", rawMessage.GetId(),
 						)
 					}
-				}(handler, rawMessage)
+				} else {
+					go func(h bus.MessageHandler, msg *bus.RawMessage) {
+						if err := h(context.Background(), msg); err != nil {
+							c.logger.Error("error handling message in kafka connection",
+								"error", err,
+								"topic", msg.TypeKey(),
+								"message_id", msg.GetId(),
+							)
+						}
+					}(handler, rawMessage)
+				}
 			}
 		})
 
-		c.client.CommitRecords(ctx, fetches.Records()...)
+		if err := c.client.CommitRecords(ctx, fetches.Records()...); err != nil {
+			c.logger.Error("error committing records in kafka connection", "error", err)
+		}
 	}
 }
