@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -22,17 +23,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 1. Initialize Bus and Logger
+	// 1. Initialize Bus
 	logger := NewSimpleConsoleLogger()
 	cfg := kafkabus.Config{
 		Seeds:  []string{KafkaBroker},
 		Logger: logger,
-		Acks:   kgo.AllISRAcks(),
 	}
 
-	// Wait up to 5 seconds for Kafka to be available (useful for Docker setup)
 	if err := waitForKafka(ctx, logger, cfg.Seeds); err != nil {
-		logger.Error("Failed to connect to Kafka after waiting", "error", err)
+		logger.Error("Failed to connect to Kafka", "error", err)
 		os.Exit(1)
 	}
 
@@ -42,36 +41,40 @@ func main() {
 		os.Exit(1)
 	}
 	defer b.Shutdown(ctx)
-	logger.Info("Kafka Bus initialized successfully", "brokers", KafkaBroker)
+	logger.Info("Kafka Bus initialized successfully")
 
-	// --- SETUP: EVENT BUS (Subscribers & Consumers) ---
+	// --- SETUP: EVENT BUS (Typed) ---
 	var wg sync.WaitGroup
-	wg.Add(1) // Keeps the main goroutine alive until cancelled
+	wg.Add(1)
 
-	// 2. Register independent subscribers (both get all messages)
-	bus.Subscribe(b, "inventory-service", inventorySubscriber)
-	bus.Subscribe(b, "reporting-service", func(ctx context.Context, msg *OrderCreatedEvent) error {
+	// 2. SubscribeTyped: We pass json.Unmarshal.
+	// The library will fetch bytes from Kafka, call Unmarshal, and pass *OrderCreatedEvent to handlers.
+
+	bus.SubscribeTyped(b, TopicOrderCreated, "inventory-service", inventorySubscriber, json.Unmarshal)
+
+	// Inline handler example
+	bus.SubscribeTyped(b, TopicOrderCreated, "reporting-service", func(ctx context.Context, msg *OrderCreatedEvent) error {
 		fmt.Printf(" [EVT] [Subscriber:Reporting] Received Order %s. Generating report.\n", msg.ID)
 		return nil
-	})
+	}, json.Unmarshal)
+
 	logger.Info("Registered 2 independent subscribers for OrderCreatedEvent")
 
-	// 3. Register a load-balanced consumer group (only one member gets a given message)
+	// 3. GroupSubscribeTyped
 	eventGroupId := "order-audit-group"
-	bus.GroupSubscribe(b, "audit-consumer-1", eventGroupId, auditConsumer("A"))
-	bus.GroupSubscribe(b, "audit-consumer-2", eventGroupId, auditConsumer("B"))
+	bus.GroupSubscribeTyped(b, TopicOrderCreated, "audit-consumer-1", eventGroupId, auditConsumer("A"), json.Unmarshal)
+	bus.GroupSubscribeTyped(b, TopicOrderCreated, "audit-consumer-2", eventGroupId, auditConsumer("B"), json.Unmarshal)
+
 	logger.Info("Registered 2 consumers for audit event group", "group", eventGroupId)
 
-	// Start the main loop to listen for termination signals
 	go waitForTermination(logger, cancel, &wg)
 
-	// Give consumers time to connect and partition to balance
 	logger.Info("Waiting for Kafka consumers to connect and stabilize...")
 	time.Sleep(3 * time.Second)
 
-	// --- PUBLISH & SEND ---
+	// --- PUBLISH ---
 
-	logger.Info("\n--- Publishing 5 OrderCreatedEvent messages (Async Pub/Sub) ---")
+	logger.Info("\n--- Publishing 5 OrderCreatedEvent messages ---")
 	for i := 1; i <= 5; i++ {
 		evt := &OrderCreatedEvent{
 			ID:        fmt.Sprintf("ORD-%03d", i),
@@ -79,16 +82,14 @@ func main() {
 			Quantity:  i * 10,
 		}
 		if err := b.Publish(ctx, evt); err != nil {
-			logger.Error("Failed to publish event", "error", err, "messageId", evt.ID)
+			logger.Error("Failed to publish event", "error", err)
 		}
 	}
 
-	// Keep the main goroutine alive until cancelled by signal
 	wg.Wait()
 	logger.Info("Application shutting down.")
 }
 
-// waitForTermination blocks until a termination signal is received or MaxWaitTime is reached.
 func waitForTermination(logger bus.Logger, cancel context.CancelFunc, wg *sync.WaitGroup) {
 	defer wg.Done()
 	signalChan := make(chan os.Signal, 1)
@@ -103,12 +104,10 @@ func waitForTermination(logger bus.Logger, cancel context.CancelFunc, wg *sync.W
 	cancel()
 }
 
-// waitForKafka attempts to connect to Kafka with a timeout.
 func waitForKafka(ctx context.Context, logger bus.Logger, seeds []string) error {
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Use kgo.NewClient with ConsumeTopics set to nil to just check connectivity
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(seeds...),
 		kgo.WithLogger(kafkabus.NewKafkaLoggerAdapter(logger, kgo.LogLevelDebug)),

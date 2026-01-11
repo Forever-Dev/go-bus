@@ -2,84 +2,100 @@ package bus
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"reflect"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
-func Subscribe[T Message](
-	b EventBus,
-	listenerId string,
-	handler GenericMessageHandler[T],
-) error {
-	if err := validateMessageType[T](); err != nil {
-		return err
-	}
+// UnmarshalFunc defines the signature for a function that decodes bytes into a value.
+// e.g., json.Unmarshal or protojson.Unmarshal
+type UnmarshalFunc func(data []byte, v any) error
 
+// TypedMessageHandler is a strongly typed handler for a specific message type.
+type TypedMessageHandler[T any] func(ctx context.Context, msg *T) error
+
+// SubscribeTyped registers a handler for a specific type T.
+// It uses the provided unmarshaller to decode the message payload if necessary.
+func SubscribeTyped[T any](
+	b EventBus,
+	topic string,
+	listenerId string,
+	handler TypedMessageHandler[T],
+	unmarshaller UnmarshalFunc,
+) error {
 	return b.Subscribe(
-		getTopic[T](),
+		topic,
 		listenerId,
-		shimHandler(handler),
+		shimHandler(handler, unmarshaller),
 	)
 }
 
-func GroupSubscribe[T Message](
+// GroupSubscribeTyped registers a group handler for a specific type T.
+func GroupSubscribeTyped[T any](
 	b EventBus,
+	topic string,
 	listenerId string,
 	groupId string,
-	handler GenericMessageHandler[T],
+	handler TypedMessageHandler[T],
+	unmarshaller UnmarshalFunc,
 ) error {
-	if err := validateMessageType[T](); err != nil {
-		return err
-	}
-
 	return b.GroupSubscribe(
-		getTopic[T](),
+		topic,
 		listenerId,
 		groupId,
-		shimHandler(handler),
+		shimHandler(handler, unmarshaller),
 	)
 }
 
-func shimHandler[T Message](handler GenericMessageHandler[T]) MessageHandler {
+// shimHandler creates a wrapper that handles type assertion (for local bus)
+// or unmarshalling (for network bus).
+func shimHandler[T any](handler TypedMessageHandler[T], unmarshaller UnmarshalFunc) MessageHandler {
 	return func(ctx context.Context, m Message) error {
-		// Membus
-		if typedMsg, ok := m.(T); ok {
-			return handler(ctx, typedMsg)
+		// 1. Fast Path: In-Memory (Membus)
+		// If the message is already the correct pointer type, use it directly.
+		if typed, ok := m.(T); ok {
+			return handler(ctx, &typed)
 		}
 
-		// Network bus (e.g., MQTT, Kafka)
-		if raw, ok := m.(*RawMessage); ok {
-			var z T
-			typedMsgPtr := reflect.New(reflect.TypeOf(z).Elem()).Interface().(T)
-			if err := typedMsgPtr.Unmarshal(raw.Payload); err != nil {
-				return &EventBusError{&BusError{fmt.Sprintf("failed to unmarshal raw message to type %T: %v", typedMsgPtr, err)}}
-			}
-			return handler(ctx, typedMsgPtr)
+		// 2. Slow Path: Serialized (Kafka/Network)
+		// If we have raw bytes, unmarshal them into T.
+		data, err := m.Bytes()
+		if err != nil {
+			return fmt.Errorf("failed to get message bytes: %w", err)
 		}
 
-		return &EventBusError{&BusError{fmt.Sprintf("unexpected message type %T", m)}}
+		var payload T
+		if err := unmarshaller(data, &payload); err != nil {
+			return &EventBusError{&BusError{fmt.Sprintf("failed to unmarshal to %T: %v", payload, err)}}
+		}
+
+		return handler(ctx, &payload)
 	}
 }
 
-func validateMessageType[T Message]() error {
-	var z T
-
-	if reflect.TypeOf(z) == nil {
-		return &EventBusError{&BusError{"cannot use nil message type"}}
-	}
-
-	if reflect.TypeOf(z).Kind() != reflect.Ptr {
-		return &EventBusError{&BusError{fmt.Sprintf("message type %T must be a pointer", z)}}
-	}
-
-	return nil
+func SubscribeJSON[T any](b EventBus, topic, lid string, handler TypedMessageHandler[T]) error {
+	return SubscribeTyped(b, topic, lid, handler, json.Unmarshal)
 }
 
-func getTopic[T Message]() string {
-	var z T
+func SubscribeJSONGroup[T any](b EventBus, topic, lid, gid string, handler TypedMessageHandler[T]) error {
+	return GroupSubscribeTyped(b, topic, lid, gid, handler, json.Unmarshal)
+}
 
-	if reflect.ValueOf(z).IsNil() {
-		return reflect.New(reflect.TypeOf(z).Elem()).Interface().(T).TypeKey()
+// ProtoUnmarshalAdapter allows protojson.Unmarshal to be used where UnmarshalFunc is expected.
+func ProtoUnmarshalAdapter(data []byte, v any) error {
+	msg, ok := v.(proto.Message)
+	if !ok {
+		return fmt.Errorf("target type %T does not implement proto.Message", v)
 	}
-	return z.TypeKey()
+	return protojson.Unmarshal(data, msg)
+}
+
+func SubscribeProto[T any](b EventBus, topic, lid string, handler TypedMessageHandler[T]) error {
+	return SubscribeTyped(b, topic, lid, handler, ProtoUnmarshalAdapter)
+}
+
+func SubscribeProtoGroup[T any](b EventBus, topic, lid, gid string, handler TypedMessageHandler[T]) error {
+	return GroupSubscribeTyped(b, topic, lid, gid, handler, ProtoUnmarshalAdapter)
 }

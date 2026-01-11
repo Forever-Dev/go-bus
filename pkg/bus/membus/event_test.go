@@ -383,7 +383,8 @@ var _ = Describe("Bus.Event", func() {
 							})
 
 							It("invokes generic subscribed handlers when an event is published", func(ctx context.Context) {
-								newHandler := func(id string) bus.GenericMessageHandler[*bus.BasicMessage] {
+								// UPDATED: Use TypedMessageHandler with struct type bus.BasicMessage
+								newHandler := func(id string) bus.TypedMessageHandler[bus.BasicMessage] {
 									return func(ctx context.Context, msg *bus.BasicMessage) error {
 										invoked <- id
 										wg.Done()
@@ -393,7 +394,8 @@ var _ = Describe("Bus.Event", func() {
 								for i := range settings.numHandlers {
 									handlerId := "handler-" + strconv.Itoa(i)
 									handler := newHandler(handlerId)
-									Expect(bus.Subscribe(messageBus, handlerId, handler)).To(Succeed())
+									// UPDATED: Use SubscribeTyped, pass Topic, pass nil Unmarshaller
+									Expect(bus.SubscribeTyped(messageBus, msg.TypeKey(), handlerId, handler, nil)).To(Succeed())
 								}
 
 								if settings.numMembers > 0 {
@@ -402,7 +404,8 @@ var _ = Describe("Bus.Event", func() {
 									for i := range settings.numMembers {
 										memberId := "member-" + strconv.Itoa(i)
 										handler := newHandler(memberId)
-										Expect(bus.GroupSubscribe(messageBus, memberId, groupId, handler)).To(Succeed())
+										// UPDATED: Use GroupSubscribeTyped, pass Topic, pass nil Unmarshaller
+										Expect(bus.GroupSubscribeTyped(messageBus, msg.TypeKey(), memberId, groupId, handler, nil)).To(Succeed())
 									}
 								}
 							})

@@ -10,10 +10,4 @@ type Message interface {
 
 	// Bytes returns the payload of the message.
 	Bytes() ([]byte, error)
-
-	// Unmarshal populates the message from the given byte slice.
-	Unmarshal(data []byte) error
-
-	// Raw returns the raw representation of the message.
-	Raw() any
 }
