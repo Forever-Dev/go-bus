@@ -17,6 +17,8 @@ type connection struct {
 
 	strictProcessingOrder bool
 
+	hasConsumerGroup bool
+
 	keepAlive bool
 
 	logger bus.Logger
@@ -47,6 +49,8 @@ func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 		return nil, ErrNoSeedsProvided
 	}
 
+	hasConsumerGroup := l.group != ""
+
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(k.config.Seeds...),
 		kgo.ConsumeTopics(l.topic),
@@ -54,7 +58,8 @@ func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 		kgo.WithLogger(NewKafkaLoggerAdapter(k.config.Logger, k.config.LogLevel)),
 	}
 	opts = append(opts, k.config.Opts...)
-	if l.group != "" {
+
+	if hasConsumerGroup {
 		k.config.Logger.Debug("setting consumer group for listener",
 			"group_id", l.group,
 			"listener_id", l.id,
@@ -79,7 +84,9 @@ func (k *kafkaBus) NewConnection(l *listener) (*connection, error) {
 		exitCh:        make(chan struct{}),
 
 		strictProcessingOrder: k.config.StrictConsumeOrdering,
+		hasConsumerGroup:      hasConsumerGroup, // Store it here
 	}
+
 	if l.id != "" {
 		k.config.Logger.Debug("adding listener to new kafka connection",
 			"group_id", l.group,
@@ -222,8 +229,10 @@ func (c *connection) Listen(ctx context.Context) {
 			}
 		})
 
-		if err := c.client.CommitRecords(ctx, fetches.Records()...); err != nil {
-			c.logger.Error("error committing records in kafka connection", "error", err)
+		if c.hasConsumerGroup {
+			if err := c.client.CommitRecords(ctx, fetches.Records()...); err != nil {
+				c.logger.Error("error committing records in kafka connection", "error", err)
+			}
 		}
 	}
 }
