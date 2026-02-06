@@ -96,3 +96,7 @@ func (b *memBus) Shutdown(ctx context.Context) error {
 	b.workerWg.Wait()
 	return nil
 }
+
+func (b *memBus) Ping(ctx context.Context) error {
+	return nil
+}

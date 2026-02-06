@@ -22,3 +22,11 @@ func (k *kafkaBus) Flush(ctx context.Context) error {
 	k.config.Logger.Info("Producer buffer successfully flushed.")
 	return nil
 }
+
+// Ping checks the health of the Kafka bus.
+func (k *kafkaBus) Ping(ctx context.Context) error {
+	if k.client == nil {
+		return nil
+	}
+	return k.client.client.Ping(ctx)
+}

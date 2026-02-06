@@ -20,6 +20,9 @@ type CommandBus interface {
 
 	// Shutdown gracefully shuts down the event bus
 	Shutdown(ctx context.Context) error
+
+	// Ping checks the health of the command bus
+	Ping(ctx context.Context) error
 }
 
 type MessageBusError struct {
